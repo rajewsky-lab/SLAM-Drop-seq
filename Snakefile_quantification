@@ -1,0 +1,101 @@
+"""
+Author: Haiyue Liu
+Aim: Quantify gene expression counts for different RNA types
+Date: 11-06-2021
+Run: snakemake --cores {n} -s Snakefile
+"""
+
+##----------------------------##
+## load config yaml file
+##---------------------------##
+configfile: "./config.yaml"
+
+### samples
+import pandas as pd
+samples = pd.read_table("samples.tsv").set_index("sample", drop=False)
+samples = samples['sample']
+
+##-------------------------------------##
+## Working directory
+##-------------------------------------##
+WORKING_DIR = config['WORKING_DIR']
+FASTQ_DIR = config['FASTQ_DIR']
+LOG_DIR = config['LOG_DIR']
+OUT_DIR = config['OUT_DIR']
+
+##--------------------------------------##
+## Packages and script directoty
+##--------------------------------------##
+
+PICARD_TOOL_DIR = config['PICARD_TOOL_DIR']
+DROPSEQ_ROOT = config['DROPSEQ_ROOT']
+STAR_DIR = config['STAR_DIR']
+Rscript_DIR = config['Rscript_DIR']
+SAMTOOLS_DIR = config['SAMTOOLS_DIR']
+SCRIPT_DIR = config['SCRIPT_DIR']
+
+##-------------------------------------------------------------##
+## Variables declaration: genome, gtf, index and other information
+##-------------------------------------------------------------##
+FASTA = config['FASTA']
+INDEX = config['INDEX']
+REFFLAT = config['REFFLAT']
+EXON_BED = config['EXON_BED']
+INTRON_BED = config['INTRON_BED']
+AMBIGUOUS_BED = config['AMBIGUOUS_BED']
+GENES_INFO = config['GENES_INFO']
+
+##-------------------------------##
+## parameters
+##-------------------------------##
+MAPPING_CORES = config['MAPPING_CORES']
+MERGING_CORES = config['MERGING_CORES']
+
+##-------------------------------------------##
+## rule all: targeted outputs
+##-------------------------------------------##
+
+rule all:
+        input:
+                expand([config['OUT_DIR'] + '{sample}_data_per_locus_corrected.csv',
+                        config['OUT_DIR'] + '{sample}_data_per_umi_corrected.csv',
+			config['OUT_DIR'] + '{sample}_gene_expression_counts.txt'],
+                        sample=samples
+                        )
+
+
+##--------------------------------------------------------------##
+## Identify newlythesized molecules
+##--------------------------------------------------------------##
+rule identify_new_molecules:
+        input:
+                tc_per_locus=config['OUT_DIR'] + '{sample}_data_per_locus.csv',
+                umi=config['OUT_DIR'] + '{sample}_gene_annotated_with_mismatches_SS_merged.csv',
+                script=config['SCRIPT_DIR'] + '/identify_newly_synthesized_molecules.R'
+        output:
+                per_locus=config['OUT_DIR'] + '{sample}_data_per_locus_corrected.csv',
+                per_umi=config['OUT_DIR'] + '{sample}_data_per_umi_corrected.csv'
+
+        shell: """
+                {Rscript_DIR} {input.script} {input.tc_per_locus} {input.umi} {output.per_locus} {output.per_umi}
+                """
+
+##--------------------------------------------------------------------------------##
+## Quantify gene counts for different RNA types (new, old, spliced and unspliced)
+##--------------------------------------------------------------------------------##
+
+rule quantification:
+	input:
+		per_umi=config['OUT_DIR'] + '{sample}_data_per_umi_corrected.csv',
+		script=config['SCRIPT_DIR'] + '/gene_counts_quantification.R'
+	output:
+		config['OUT_DIR'] + '{sample}_gene_expression_counts.txt'
+
+	shell: """
+		{Rscript_DIR} {input.script} {input.per_umi} {output}
+
+		"""
+		
+##-----------------------------##
+## End
+##-----------------------------##

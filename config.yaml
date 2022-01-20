@@ -1,0 +1,43 @@
+##-------------------------------------##
+## Working directory
+##-------------------------------------##
+WORKING_DIR: "/project/"
+FASTQ_DIR: "/project/test_data/"
+LOG_DIR: "/project/logs/"
+OUT_DIR: "/project/output/"
+
+##--------------------------------------##
+## Packages and script directoty
+##--------------------------------------##
+DROPSEQ_ROOT: "/path_to_bin/Drop-seq_tools-2.0.0"
+PICARD_TOOL_DIR: "/path_to_bin/Drop-seq_tools-2.0.0/3rdParty/picard/picard.jar"
+STAR_DIR: "/path_to_bin/STAR-2.6.0a/STAR"
+Rscript_DIR: "/usr/bin/Rscript"
+SAMTOOLS_DIR: "/path_to_bin/samtools"
+SCRIPT_DIR: "/project/script"
+
+##-------------------------------------------------------------##
+## Variables declaration: genome, gtf, index and other information
+##-------------------------------------------------------------##
+FASTA: "/project/genome/hg38.fasta"
+INDEX: "/project/annotation/index/"
+REFFLAT: "/project/annotation/gencode.v29.filtered.refFlat"
+EXON_BED: "/project/annotation/exon.unambiguous.bed.gz"
+INTRON_BED: "/project/annotation/intron.unambiguous.bed.gz"
+AMBIGUOUS_BED: "/project/annotation/ambiguous.bed.gz"
+GENES_INFO: "/project/annotation/genes_info"
+
+##-------------------------------##
+## parameters
+##-------------------------------##
+MAPPING_CORES: 32
+MERGING_CORES: 16
+
+##-----------------------------------------------##
+## samples list
+##-----------------------------------------------##
+# path to sample sheet (TSV format, columns: sample, condition, ...)
+SAMPLES: samples.tsv
+
+#SAMPLES: ['sample1', 'sample2', 'sample3']
+

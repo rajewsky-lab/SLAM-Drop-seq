@@ -1,0 +1,659 @@
+"""
+Author: Haiyue Liu
+Aim: Processing scSLAMseq data using dropseq tools and custom annotation and merging scripts
+Date: 04-25-2021
+Run: snakemake --cores {n} -s Snakefile
+"""
+
+##----------------------------##
+## load config yaml file
+##---------------------------##
+configfile: "./config.yaml"
+
+### samples
+import pandas as pd
+samples = pd.read_table("samples.tsv").set_index("sample", drop=False)
+samples = samples['sample']
+
+##-------------------------------------##
+## Working directory
+##-------------------------------------##
+WORKING_DIR = config['WORKING_DIR']
+FASTQ_DIR = config['FASTQ_DIR']
+LOG_DIR = config['LOG_DIR']
+OUT_DIR = config['OUT_DIR']
+
+##--------------------------------------##
+## Packages and script directoty
+##--------------------------------------##
+
+PICARD_TOOL_DIR = config['PICARD_TOOL_DIR']
+DROPSEQ_ROOT = config['DROPSEQ_ROOT']
+STAR_DIR = config['STAR_DIR']
+Rscript_DIR = config['Rscript_DIR']
+SAMTOOLS_DIR = config['SAMTOOLS_DIR']
+SCRIPT_DIR = config['SCRIPT_DIR']
+
+##-------------------------------------------------------------##
+## Variables declaration: genome, gtf, index and other information
+##-------------------------------------------------------------##
+FASTA = config['FASTA']
+INDEX = config['INDEX']
+REFFLAT = config['REFFLAT']
+EXON_BED = config['EXON_BED']
+INTRON_BED = config['INTRON_BED']
+AMBIGUOUS_BED = config['AMBIGUOUS_BED']
+GENES_INFO = config['GENES_INFO']
+
+##-------------------------------##
+## parameters
+##-------------------------------##
+MAPPING_CORES = config['MAPPING_CORES']
+MERGING_CORES = config['MERGING_CORES']
+
+##-------------------------------------------##
+## rule all: targeted outputs
+##-------------------------------------------##
+
+rule all:
+	input:
+		expand([config['OUT_DIR'] + '{sample}_unaligned_tagged_Cellular.bam_summary.txt',
+			config['OUT_DIR'] + '{sample}_unaligned_tagged_Molecular.bam_summary.txt',
+			config['OUT_DIR'] + '{sample}_adapter_trimming_report.txt',
+			config['OUT_DIR'] + '{sample}_polyA_trimming_report.txt',
+			config['OUT_DIR'] + '{sample}_unaligned_mc_tagged_filtered.fastq',
+			config['OUT_DIR'] + '{sample}_Aligned.out.bam',
+			config['OUT_DIR'] + '{sample}_substitution_error_report.txt',
+			config['OUT_DIR'] + '{sample}_synthesis_error_stats.txt',
+			config['OUT_DIR'] + '{sample}_synthesis_error_summary.txt',
+			config['OUT_DIR'] + '{sample}_synthesis_error_report.txt',
+			config['OUT_DIR'] + '{sample}_aligned_sorted.bam',
+			config['OUT_DIR'] + '{sample}_cell_readcounts.txt.gz',
+			config['OUT_DIR'] + '{sample}_cell_number.txt',
+                        config['OUT_DIR'] + '{sample}_CDF_Read_fraction.png',
+			config['OUT_DIR'] + '{sample}.dge.txt.gz',
+                        config['OUT_DIR'] + '{sample}.dge.summary.txt',
+			config['OUT_DIR'] + '{sample}_best_cell_barcodes.txt',
+			config['OUT_DIR'] + '{sample}_aligned_sorted.bam.bai',
+                        config['OUT_DIR'] + '{sample}_gene_annotated_with_mismatches_SS.bam',
+			config['OUT_DIR'] + '{sample}_gene_annotated_with_mismatches_SS.bam.bai',
+ 			config['OUT_DIR'] + '{sample}_gene_annotated_with_mismatches_SS_merged.csv',
+                        config['OUT_DIR'] + '{sample}_gene_annotated_with_mismatches_SS_ag_per_locus.csv',
+                        config['OUT_DIR'] + '{sample}_gene_annotated_with_mismatches_SS_tc_per_locus.csv',
+			config['OUT_DIR'] + '{sample}_data_per_locus.csv'],
+			#config['OUT_DIR'] + '{sample}_data_per_locus_corrected.csv',
+			#config['OUT_DIR'] + '{sample}_data_per_umi_corrected.csv'],
+			sample=samples
+			)
+
+####--------------------------------------------##
+### FastqToSam
+###--------------------------------------------##
+rule FastqToSam:
+	input:
+		R1=config['FASTQ_DIR'] + '{sample}_R1.fastq.gz',
+		R2=config['FASTQ_DIR'] + '{sample}_R2.fastq.gz'
+
+	output:
+		temp(config['OUT_DIR'] + '{sample}_unmapped.bam')
+
+	params: sn='{sample}'
+
+	message: """---FastqToSam---"""
+
+	shell: """
+		java -Xmx12g -jar {PICARD_TOOL_DIR} FastqToSam \
+			F1={input.R1} \
+			F2={input.R2} \
+			O={output} \
+			SM={params.sn}
+		"""
+
+##------------------------------------------------------##
+## Tag cell barcode
+## Cell barcode is extracted from bases 1-12 in Read 1
+## Add a tag XC for cell barcodes in the BAM file
+##------------------------------------------------------##
+rule tag_cells:
+	input:
+		config['OUT_DIR'] + '{sample}_unmapped.bam'
+
+	output:
+		bam=temp(config['OUT_DIR'] + '{sample}_unaligned_tagged_Cell.bam'),
+        	summary=config['OUT_DIR'] + '{sample}_unaligned_tagged_Cellular.bam_summary.txt'
+
+	message: """---Tag Cell Barcodes."""
+
+	shell: """
+		{DROPSEQ_ROOT}/TagBamWithReadSequenceExtended \
+			INPUT={input} \
+			OUTPUT={output.bam} \
+			SUMMARY={output.summary} \
+			BASE_RANGE=1-12 \
+			BASE_QUALITY=10 \
+			BARCODED_READ=1 \
+			DISCARD_READ=False \
+			TAG_NAME=XC \
+			NUM_BASES_BELOW_QUALITY=1
+		"""
+
+##-----------------------------------------------------##
+## Tag molecular barcode
+## molecular barcode from 13-20 in Read 1
+## Add tag XM for molecular barcodes
+## Discard low quality reads after this step
+##------------------------------------------------------##
+rule tag_molecules:
+	input:
+		bam=config['OUT_DIR'] + '{sample}_unaligned_tagged_Cell.bam'
+
+	output:
+		bam=temp(config['OUT_DIR'] + '{sample}_unaligned_tagged_CellMolecular.bam'),
+		summary=config['OUT_DIR'] + '{sample}_unaligned_tagged_Molecular.bam_summary.txt'
+
+	message: """---Tag molecular barcodes."""
+
+	shell: """
+		{DROPSEQ_ROOT}/TagBamWithReadSequenceExtended \
+			INPUT={input.bam} \
+			OUTPUT={output.bam} \
+			SUMMARY={output.summary} \
+			BASE_RANGE=13-20 \
+			BASE_QUALITY=10 \
+			BARCODED_READ=1 \
+			DISCARD_READ=True \
+			TAG_NAME=XM \
+			NUM_BASES_BELOW_QUALITY=1
+		"""
+
+##---------------------------------------------------------------------------##
+## Filter BAM
+## Remove reads where the cell or molecular barcodes has low qulaity bases
+##----------------------------------- ---------------------------------------##
+rule filter_bam:
+	input:
+		bam=config['OUT_DIR'] + '{sample}_unaligned_tagged_CellMolecular.bam'
+
+	output:
+		bam=temp(config['OUT_DIR'] + '{sample}_unaligned_tagged_filtered.bam')
+
+	message: """--- Filter BAM with low quality."""
+
+	shell: """
+		{DROPSEQ_ROOT}/FilterBam \
+			TAG_REJECT=XQ \
+			INPUT={input.bam} \
+			OUTPUT={output.bam}
+		"""
+
+##---------------------------------------------------##
+## Trim 5' primer sequence
+## trim the SMART adapter that can occur 5' of the end
+##---------------------------------------------------##
+
+rule trim_5_primer:
+	input:
+		bam=config['OUT_DIR'] + '{sample}_unaligned_tagged_filtered.bam'
+	output:
+		bam=temp(config['OUT_DIR'] + '{sample}_unaligned_tagged_trimmed_smart.bam'),
+		summary=config['OUT_DIR'] + '{sample}_adapter_trimming_report.txt'
+
+	message: """---Trim SMART Adapter."""
+
+	shell: """
+		{DROPSEQ_ROOT}/TrimStartingSequence \
+			INPUT={input.bam} \
+			OUTPUT={output.bam} \
+			OUTPUT_SUMMARY={output.summary} \
+			SEQUENCE=AAGCAGTGGTATCAACGCAGAGTGAATGGG \
+			MISMATCHES=0 \
+			NUM_BASES=5
+		"""
+
+
+###--------------------------------------------------##
+### Trim 3' primer sequence
+### trim PolyA tails from the 3' end of the reads
+###--------------------------------------------------##
+rule trim_3_primer:
+	input:
+		bam=config['OUT_DIR'] + '{sample}_unaligned_tagged_trimmed_smart.bam'
+
+	output:
+		bam=temp(config['OUT_DIR'] + '{sample}_unaligned_mc_tagged_filtered.bam'),
+		summary=config['OUT_DIR'] + '{sample}_polyA_trimming_report.txt'
+
+	message: """---Trim PolyA tails."""
+
+	shell: """
+		{DROPSEQ_ROOT}/PolyATrimmer \
+			INPUT={input.bam} \
+			OUTPUT={output.bam} \
+			OUTPUT_SUMMARY={output.summary} \
+			MISMATCHES=0 \
+			NUM_BASES=6
+		"""
+
+###--------------------------------------------------------##
+### Sam -> Fastq
+### extract the FASTQ files from BAM using Picard's tools
+###--------------------------------------------------------##
+
+rule sam_to_fastq:
+	input:
+		bam=config['OUT_DIR'] + '{sample}_unaligned_mc_tagged_filtered.bam'
+
+	output:
+		fastq=config['OUT_DIR'] + '{sample}_unaligned_mc_tagged_filtered.fastq'
+
+	message: """---Sam to Fastq."""
+
+	shell: """
+		java -Xmx12g -jar {PICARD_TOOL_DIR} SamToFastq \
+			INPUT={input.bam} \
+			FASTQ={output.fastq}
+		"""
+
+##--------------------------------------------------------------------##
+## STAR alignment
+## STAR requires roughly 30G of memory to align a single human genome
+##--------------------------------------------------------------------##
+rule star:
+	input:
+		fastq=config['OUT_DIR'] + '{sample}_unaligned_mc_tagged_filtered.fastq'
+
+	output:
+		bam=config['OUT_DIR'] + '{sample}_Aligned.out.bam'
+	params:
+		star_index={INDEX},
+		output_prefix=config['OUT_DIR'] + '{sample}_'
+
+	message: """----STAR alignment."""
+
+	threads: 32
+
+	shell: """
+		{STAR_DIR} \
+			--runThreadN 32 \
+			--genomeDir {params.star_index} \
+			--readFilesIn {input.fastq} \
+			--outFileNamePrefix {params.output_prefix} \
+			--outFilterMismatchNmax 10 \
+			--outSAMtype BAM Unsorted \
+			--outSAMattributes AS NH nM NM MD
+		"""
+
+##---------------------------------------------------------------------##
+## Sort STAR alignment tagged SAM to recover cell/molecular barcords
+##---------------------------------------------------------------------##
+rule sort_STAR_mapped_bam:
+	input:
+		sam=config['OUT_DIR'] + '{sample}_Aligned.out.bam'
+
+	output:
+		bam=temp(config['OUT_DIR'] + '{sample}_STAR_mapped_sorted.bam')
+
+	message: """---Sort aligned bam in queryname order."""
+
+	shell: """
+		java -Xmx12g -jar {PICARD_TOOL_DIR} SortSam \
+			I={input.sam} \
+			O={output.bam} \
+			SO=queryname \
+			#TMP_DIR=/scratch/tmp
+			TMP_DIR=`pwd`/tmp
+		"""
+
+##-----------------------------------------------------------------------------------------------------##
+## Merge Bam Alignment
+## Merge star aligned BAM with unaligned BAM that has been tagged with cell/molecular barcodes(unmapped BAM)
+##-----------------------------------------------------------------------------------------------------##
+rule merge:
+	input:
+	 	aligned=config['OUT_DIR'] + '{sample}_STAR_mapped_sorted.bam',
+		unmapped=config['OUT_DIR'] + '{sample}_unaligned_mc_tagged_filtered.bam'
+
+	output:
+		bam=temp(config['OUT_DIR'] + '{sample}_merged.bam')
+	params:
+		fasta=FASTA
+
+	message: """"---Merge BAM."""
+
+	shell: """
+		java -Xmx12g -jar {PICARD_TOOL_DIR} MergeBamAlignment \
+			R={params.fasta} \
+			UNMAPPED={input.unmapped} \
+			ALIGNED={input.aligned} \
+			O={output.bam} \
+			INCLUDE_SECONDARY_ALIGNMENTS=false \
+			PAIRED_RUN=false \
+			CLIP_ADAPTERS=false
+
+		"""
+
+##---------------------------------------------##
+## Add gene function tags
+##---------------------------------------------##
+rule tag_gene_function:
+        input:
+	        config['OUT_DIR'] + '{sample}_merged.bam'
+
+        output:
+	        temp(config['OUT_DIR'] + '{sample}_function_tagged.bam')
+
+        params:  refFlat=REFFLAT
+
+	message: """---Tag reads with gene/exon names."""
+
+	shell: """
+	    {DROPSEQ_ROOT}/TagReadWithGeneFunction \
+		    I={input} \
+			O={output} \
+			ANNOTATIONS_FILE={params.refFlat}
+		 """
+
+##---------------------------------------------------------##
+## DetectBeadSubstitutionErrors
+##---------------------------------------------------------##
+rule bead_substitution_error:
+	input:
+	        config['OUT_DIR'] + '{sample}_function_tagged.bam'
+
+	output:
+	        bam=temp(config['OUT_DIR'] + '{sample}_substitution_repaired.bam'),
+	        report=config['OUT_DIR'] + '{sample}_substitution_error_report.txt'
+
+	shell: """
+	        {DROPSEQ_ROOT}/DetectBeadSubstitutionErrors \
+		        INPUT={input} \
+		       	OUTPUT={output.bam} \
+		      	MIN_UMIS_PER_CELL=20 \
+			    NUM_THREADS=10 \
+		      	OUTPUT_REPORT={output.report}
+		"""
+##-------------------------------------------------##
+## DetectBeadSynthesisErrors
+##-------------------------------------------------##
+rule bead_synthesis_error:
+        input:
+	        config['OUT_DIR'] + '{sample}_substitution_repaired.bam'
+        output:
+            bam=temp(config['OUT_DIR'] + '{sample}_bead_error_repaired.bam'),
+            stats=config['OUT_DIR'] + '{sample}_synthesis_error_stats.txt',
+	        summary=config['OUT_DIR'] + '{sample}_synthesis_error_summary.txt',
+            report=config['OUT_DIR'] + '{sample}_synthesis_error_report.txt'
+
+        shell: """
+	        {DROPSEQ_ROOT}/DetectBeadSynthesisErrors \
+	            OUTPUT_STATS={output.stats} \
+                INPUT={input} \
+		        NUM_THREADS=10 \
+                OUTPUT={output.bam} \
+		        SUMMARY={output.summary} \
+		        REPORT={output.report} \
+                MIN_UMIS_PER_CELL=20 \
+                CREATE_INDEX=true
+               """
+
+##-------------------------------------------------------------------##
+## SortAlignedBam
+##--------------------------------------------------------------------##
+
+rule sort_aligned_bam:
+	input:
+		config['OUT_DIR'] + '{sample}_bead_error_repaired.bam'
+
+	output:
+		config['OUT_DIR'] + '{sample}_aligned_sorted.bam'
+
+	shell: """
+		{SAMTOOLS_DIR} sort -@ 10 -o {output} {input}
+
+		"""
+##-------------------------------------------------------------------##
+## BAMTagHistogram
+## Select the knee of the cumulative distribution of reads per cell
+##--------------------------------------------------------------------##
+
+rule BAM_tag_histogram:
+	input:
+		config['OUT_DIR'] + '{sample}_aligned_sorted.bam'
+
+	output:
+		config['OUT_DIR'] + '{sample}_cell_readcounts.txt.gz'
+
+	shell:"""
+		{DROPSEQ_ROOT}/BamTagHistogram I={input} O={output} TAG=XC
+
+		"""
+##-----------------------------------------##
+## knee plot to get best cells
+##-----------------------------------------##
+rule knee_plot:
+	input:
+		data=config['OUT_DIR'] + '{sample}_cell_readcounts.txt.gz',
+		script=config['SCRIPT_DIR'] + '/cell_number.R'
+
+	output:
+		png=config['OUT_DIR'] + '{sample}_CDF_Read_fraction.png',
+		cell_number=config['OUT_DIR'] + '{sample}_cell_number.txt',
+		cb=temp(config['OUT_DIR'] + '{sample}_best_cell_barcodes_ori.txt')
+
+
+	shell: """
+		{Rscript_DIR} {input.script} {input.data} {output.png} {output.cell_number} {output.cb}
+
+		"""
+##------------------------------------------------------##
+### DigitalExpression
+## Extracting DGE from an aligned library
+##------------------------------------------------------##
+
+rule Digital_expression:
+	input:
+		bam=config['OUT_DIR'] + '{sample}_aligned_sorted.bam',
+		cb=config['OUT_DIR'] + '{sample}_best_cell_barcodes_ori.txt'
+
+	output:
+		dge=temp(config['OUT_DIR'] + '{sample}.dge_ori.txt.gz'),
+		summary=temp(config['OUT_DIR'] + '{sample}.dge.summary_ori.txt')
+
+	message: """---DigitalExpression."""
+
+
+	shell: """
+		{DROPSEQ_ROOT}/DigitalExpression \
+			I={input.bam} \
+			O={output.dge} \
+			SUMMARY={output.summary} \
+			CELL_BC_FILE={input.cb}
+		"""
+
+##----------------------------------------------------##
+## Filter cell barcodes
+##----------------------------------------------------##
+
+rule filterCB:
+	input:
+		summary=config['OUT_DIR'] + '{sample}.dge.summary_ori.txt',
+		script=config['SCRIPT_DIR'] +'/best_cell_barcodes.R'
+	output:
+		config['OUT_DIR'] + '{sample}_best_cell_barcodes.txt'
+
+	message: """---Filter Cell Barcodes---"""
+
+
+        shell: """
+                {Rscript_DIR} {input.script} {input.summary} {output}
+
+		"""
+
+##------------------------------------------------------##
+### DigitalExpression
+## Extracting DGE from an aligned library
+##------------------------------------------------------##
+
+rule rerun_Digital_expression:
+	input:
+		bam=config['OUT_DIR'] + '{sample}_aligned_sorted.bam',
+		cb=config['OUT_DIR'] + '{sample}_best_cell_barcodes_ori.txt'
+
+	output:
+		dge=config['OUT_DIR'] + '{sample}.dge.txt.gz',
+		summary=config['OUT_DIR'] + '{sample}.dge.summary.txt'
+
+	message: """---DigitalExpression."""
+
+	shell: """
+		{DROPSEQ_ROOT}/DigitalExpression \
+			I={input.bam} \
+			O={output.dge} \
+			SUMMARY={output.summary} \
+			CELL_BC_FILE={input.cb}
+
+		"""
+
+##-------------------------------------------------------------------##
+# Index final sorted bamfiles to be loaded by tagg function
+##--------------------------------------------------------------------##
+
+rule index_final_bam:
+        input:
+	        config['OUT_DIR'] + '{sample}_aligned_sorted.bam'
+
+	output:
+		config['OUT_DIR'] + '{sample}_aligned_sorted.bam.bai'
+
+	message: """ Index final sorted bam files """
+
+        shell: """
+                {SAMTOOLS_DIR} index -@ 20 {input}
+
+		"""
+###-------------------------------------------------------------------##
+### Tag reads assignment status and gene names
+### Add TS tag (unmapped, multimapped, unassigned, ambiguous, assigned)
+### Add GN (gene name) tag if it TS is assigned
+###--------------------------------------------------------------------##
+rule annotate_gene_assignment:
+	input:
+		bam=config['OUT_DIR'] + '{sample}_aligned_sorted.bam',
+		script=config['SCRIPT_DIR'] + '/assign_genes.py',
+		cb=config['OUT_DIR'] + '{sample}_best_cell_barcodes.txt'
+	output:
+		bam=temp(config['OUT_DIR'] + '{sample}_gene_annotated.bam'),
+		index=config['OUT_DIR'] + '{sample}_gene_annotated.bam.bai'
+	message: """ Assign gene name from final bam files """
+	shell: """
+		python {input.script} {input.bam} {input.cb} {output.bam}
+
+                """
+###-------------------------------------------------------------------##
+### Tag mismatch type and numbers
+### Add SC and TC tag
+###--------------------------------------------------------------------##
+rule annotate_mismatches:
+	input:
+		bam=config['OUT_DIR'] + '{sample}_gene_annotated.bam',
+		script=config['SCRIPT_DIR'] +'/annotate_mismatches.py'
+	output:
+		temp(config['OUT_DIR'] + '{sample}_gene_annotated_with_mismatches.bam')
+
+	message: """ Tag all conversions and their positions on the reads. """
+
+        shell: """
+                python {input.script} {input.bam} {output}
+
+                """
+
+##--------------------------------------------------------------##
+## Tag splice status
+## Add SS tag (unmapped, intron_only, inton_exon, exon_exon, exon_only, ambiguous)
+##--------------------------------------------------------------##
+rule annotate_splice_status:
+	input:
+		bam=config['OUT_DIR'] + '{sample}_gene_annotated_with_mismatches.bam',
+		script=config['SCRIPT_DIR'] + '/annotate_splice_status.sh'
+	output:
+		bam=config['OUT_DIR'] + '{sample}_gene_annotated_with_mismatches_SS.bam'
+	params:
+		exons=EXON_BED,
+		introns=INTRON_BED,
+		ambiguous=AMBIGUOUS_BED
+
+	message: """ Tag splice status """
+
+	shell: """
+	        bash {input.script} {input.bam} {params.exons} {params.introns} {params.ambiguous} | samtools view -Sbh -@ 12 -o {output.bam} -
+
+		"""
+
+##-------------------------------------------------------------------##
+# Index final annotate bamfiles
+##--------------------------------------------------------------------##
+rule index_annotated_bam:
+	input:
+		config['OUT_DIR'] + '{sample}_gene_annotated_with_mismatches_SS.bam'
+	output:
+		config['OUT_DIR'] + '{sample}_gene_annotated_with_mismatches_SS.bam.bai'
+	message: """ Index final sorted bam files """
+	shell: """
+		{SAMTOOLS_DIR} index -@ 20 {input}
+
+                """
+
+##-------------------------------------------------------------------##
+## Merge reads by UMIs
+##--------------------------------------------------------------------##
+rule merge_reads_by_umi:
+	input:
+		bam=config['OUT_DIR'] + '{sample}_gene_annotated_with_mismatches_SS.bam',
+		script=config['SCRIPT_DIR'] + '/merge_reads_by_umi.py',
+		gene_list=config['GENES_INFO']
+	output:
+		merged=config['OUT_DIR'] + '{sample}_gene_annotated_with_mismatches_SS_merged.csv',
+		ag=config['OUT_DIR'] + '{sample}_gene_annotated_with_mismatches_SS_ag_per_locus.csv',
+		tc=config['OUT_DIR'] + '{sample}_gene_annotated_with_mismatches_SS_tc_per_locus.csv'
+	params:
+		cores={MERGING_CORES}
+	shell: """
+		python {input.script} {input.bam} {input.gene_list} {params.cores} {output.merged} {output.tc} {output.ag}
+
+                """
+
+##--------------------------------------------------------------##
+## Identify true mismatches from sequencing errors
+##--------------------------------------------------------------##
+rule identify_true_mismatches:
+	input:
+		merged_tc_per_locus=config['OUT_DIR'] + '{sample}_gene_annotated_with_mismatches_SS_tc_per_locus.csv',
+		merged_umi=config['OUT_DIR'] + '{sample}_gene_annotated_with_mismatches_SS_merged.csv',
+		script=config['SCRIPT_DIR'] + '/identify_true_mismatches.R'
+	output:
+		tc_per_locus=config['OUT_DIR'] + '{sample}_data_per_locus.csv'
+
+	shell: """
+		{Rscript_DIR} {input.script} {input.merged_tc_per_locus} {input.merged_umi} {output.tc_per_locus}
+		
+		"""
+
+##--------------------------------------------------------------##
+## Identify newlythesized molecules
+##--------------------------------------------------------------##
+#rule identify_new_molecules:
+#	input:
+#		tc_per_locus=config['OUT_DIR'] + '{sample}_data_per_locus.csv',
+#		umi=config['OUT_DIR'] + '{sample}_gene_annotated_with_mismatches_SS_merged.csv',
+#		script=config['SCRIPT_DIR'] + '/identify_newly_synthesized_molecules.R'
+#	output:
+#		per_locus=config['OUT_DIR'] + '{sample}_data_per_locus_corrected.csv',
+#		per_umi=config['OUT_DIR'] + '{sample}_data_per_umi_corrected.csv'
+#	
+#	shell: """
+#		{Rscript_DIR} {input.script} {input.tc_per_locus} {input.umi} {output.per_locus} {output.per_umi}
+#		"""
+#
+###-----------------------------------##
+### End
+###-----------------------------------##
