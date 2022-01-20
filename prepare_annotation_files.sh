@@ -1,10 +1,8 @@
 #!/bin/bash
 
-# filter the gtf file to keep only the protein coding genes and lincRNA genes and transcript_support_level==1|2|3|NA
-# Using Filippos's script 'protein_coding.R' to do this
-# Then generate the other metadata using the filtered gtf.
-#Rscript filter_pc_lincRNA.Rmd
-#cat gencode.v29.filtered.protein.coding.gtf gencode.v29.filtered.lincRNA.gtf > gencode.v29.filtered_protein_coding_lincRNA.gtf 
+## this script use the reference genome to generate all the annotation files used for raw data processing
+## reference genome (fasta file) and the genome annotation (gtf file) should be pre-downloaded.
+## (optional) filter the gtf file to protein coding genes 
 
 #########
 # usage #
@@ -17,12 +15,6 @@ USAGE="$0 <fasta-input-file> <dtf-input-file> \
 
 # Check for proper usage.
 [ $# -eq 5 ] || { printf '%s\n' "usage: $USAGE" >&2; exit 1; } 
-##############
-# parameters #
-##############
-
-EXONS=$1
-
 
 #################
 # parameters ##
@@ -45,7 +37,7 @@ MEMORY=10G
 ############################
 ## tools & commonds
 ###########################
-DROPSEQ_TOOLS_DIR="/data/rajewsky/home/haliu/bin/Drop-seq_tools-2.0.0"
+DROPSEQ_TOOLS_DIR="Drop-seq_tools-2.0.0"
 BEDTOOLS="bedtools"
 BEDTOOLS_INTERSECT="$BEDTOOLS intersect -sorted -s"
 SORT="sort --parallel=$THREADS -S$MEMORY"
@@ -61,7 +53,7 @@ prefix=`basename "$GTF" .sorted.gtf`
 echo $prefix
 
 ### generate refFlat file for Dropseq tools from reference genome
-java -jar $DROPSEQ_TOOLS_DIR/picard/picard.jar CreateSequenceDictionary \
+java -jar $DROPSEQ_TOOLS_DIR//3rdParty/picard/picard.jar CreateSequenceDictionary \
 	REFERENCE=$FASTA\
 	OUTPUT=$DICT
 
@@ -96,7 +88,7 @@ cat $GTF \
     | awk -F\\t -vOFS=\\t '$4="."' \
     | uniq \
     | pigz --best \
-    > exon.bed.gz
+    > $EXONS
 ## introns
 cat $GTF \
 	| awk 'OFS="\t" { if ($3=="exon") print $1, $4-1, $5, substr($20, 2, length($20) - 3), ".", $7}' \
@@ -107,7 +99,7 @@ cat $GTF \
 	| uniq \
 	| grep -v ^chrM \
 	| pigz --best \
-	> intron.bed.gz
+	> $INTRONS
 
 #########################################################
 ## clean bed files by annotating ambiguous regoins
