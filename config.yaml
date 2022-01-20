@@ -21,7 +21,7 @@ SCRIPT_DIR: "/project/script"
 ##-------------------------------------------------------------##
 FASTA: "/project/genome/hg38.fasta"
 INDEX: "/project/annotation/index/"
-REFFLAT: "/project/annotation/gencode.v29.filtered.refFlat"
+REFFLAT: "/project/annotation/gencode.v29.refFlat"
 EXON_BED: "/project/annotation/exon.unambiguous.bed.gz"
 INTRON_BED: "/project/annotation/intron.unambiguous.bed.gz"
 AMBIGUOUS_BED: "/project/annotation/ambiguous.bed.gz"
